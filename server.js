@@ -11,7 +11,7 @@ const host = '192.168.75.214';
 
 // Google Speech-to-Text 클라이언트 생성
 const client = new speech.SpeechClient({
-    keyFilename: '/Users/ensayne/AndroidStudioProjects/NodeJS/voice_translator_nodejs/service-account-key.json',
+    keyFilename: '/Users/ensayne/AndroidStudioProjects/VoiceTranslatorProject/voice_translator_nodejs/service-account-key.json',
 });
 
 let recognizeStream = null;
