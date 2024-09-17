@@ -2,75 +2,138 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const speech = require('@google-cloud/speech');
-const bodyParser = require('body-parser');
-
 const app = express();
 const port = 3000;
-const host = '192.168.75.214';
+const host = '192.168.75.215';
 
-// Google Speech-to-Text 클라이언트 생성
-const client = new speech.SpeechClient({
-    keyFilename: '/Users/ensayne/AndroidStudioProjects/VoiceTranslatorProject/voice_translator_nodejs/service-account-key.json',
-});
+app.use(express.json());
 
-let recognizeStream = null;
-
-// Google Speech-to-Text 요청 설정
-const requestConfig = {
-  config: {
-    encoding: 'LINEAR16',
-    sampleRateHertz: 16000,
-    languageCode: 'en-US',
-  },
-  interimResults: true,
-};
-
-// 오디오 스트림을 시작하는 함수
-function startRecognitionStream() {
-  recognizeStream = client
-    .streamingRecognize(requestConfig)
-    .on('error', (err) => {
-      console.error('Error from Speech API:', err);
-      stopRecognitionStream();
-    })
-    .on('data', (data) => {
-      const transcript = data.results[0] && data.results[0].alternatives[0]
-        ? data.results[0].alternatives[0].transcript
-        : '';
-      console.log(`Transcription: ${transcript}`);
-
-      // 웹소켓을 통해 브라우저에 전송
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(transcript);
-        }
-      });
-    });
-}
-
-// 오디오 스트림을 중지하는 함수
-function stopRecognitionStream() {
-  if (recognizeStream) {
-    recognizeStream.end();
-    recognizeStream = null;
-  }
-}
-
-// WebSocket 서버 생성
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+let latestAudioData = "응답이 아직 안 왔습니다";
+
 wss.on('connection', (ws) => {
   console.log('New WebSocket connection established');
+  ws.send(latestAudioData);
 });
 
-app.use(express.static('public')); // 정적 파일 제공
-app.use(bodyParser.json()); // JSON 요청 본문 파싱
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta http-equiv="X-UA-Compatible" content="IE=edge">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Audio Data Viewer</title>
+      <style>
+        #log {
+          font-size: 14px;
+          margin-bottom: 20px;
+        }
+        #toggleButton {
+          padding: 10px 20px;
+          margin-bottom: 20px;
+          cursor: pointer;
+        }
+        #controls {
+          display: flex;
+          align-items: center;
+          margin-top: 10px;
+        }
+        canvas {
+          border: 1px solid black;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>ESP32 Audio Data</h1>
+      <button id="toggleButton">Toggle Visualization</button>
+      <div id="log">응답이 아직 안 왔습니다</div>
+      <canvas id="audioCanvas" width="800" height="200"></canvas>
+      <div id="controls">
+        <label for="scaleSlider">Amplitude Scale:</label>
+        <input type="range" id="scaleSlider" min="1" max="100" value="50">
+      </div>
+
+      <script>
+        const logDiv = document.getElementById('log');
+        const toggleButton = document.getElementById('toggleButton');
+        const canvas = document.getElementById('audioCanvas');
+        const ctx = canvas.getContext('2d');
+        const scaleSlider = document.getElementById('scaleSlider');
+        let visualize = false;
+        let amplitudeScale = 50; // 슬라이더로 조절할 진폭 스케일 값
+
+        const ws = new WebSocket('ws://${host}:${port}');
+
+        ws.onmessage = (event) => {
+          const data = parseFloat(event.data.split(': ')[1]);
+          if (visualize) {
+            drawWaveform(data);
+          } else {
+            logDiv.innerText = event.data;
+          }
+        };
+
+        ws.onerror = (error) => {
+          logDiv.innerText = 'WebSocket error: ' + error.message;
+        };
+
+        toggleButton.addEventListener('click', () => {
+          visualize = !visualize;
+          toggleButton.innerText = visualize ? 'Turn Off Visualization' : 'Turn On Visualization';
+          if (!visualize) {
+            logDiv.style.display = 'block';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          } else {
+            logDiv.style.display = 'none';
+          }
+        });
+
+        // 슬라이더로 진폭 조절
+        scaleSlider.addEventListener('input', (event) => {
+          amplitudeScale = parseInt(event.target.value);
+        });
+
+        // 음파 시각화를 부드러운 곡선 형태로 그리는 함수
+        const waveData = [];
+        const maxWaveDataLength = 400;
+
+        function drawWaveform(value) {
+          if (waveData.length >= maxWaveDataLength) {
+            waveData.shift(); // 오래된 데이터 제거
+          }
+
+          waveData.push(value); // 새로운 데이터 추가
+
+          // 캔버스 초기화 및 그리기 시작
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.beginPath();
+          ctx.moveTo(0, canvas.height / 2);
+
+          // 곡선으로 그리기
+          for (let i = 0; i < waveData.length; i++) {
+            const x = (i / maxWaveDataLength) * canvas.width;
+            const y = canvas.height / 2 - (waveData[i] / (32768 / amplitudeScale)) * (canvas.height / 2); // 진폭 스케일을 반영하여 그리기
+            ctx.lineTo(x, y);
+          }
+
+          ctx.strokeStyle = 'blue';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
 
 // '/audio' 엔드포인트에서 데이터를 받기
 app.post('/audio', (req, res) => {
-  const audioData = req.body.audio; // ESP32에서 전송된 오디오 데이터
+  console.log('POST request received at /audio');
+  const audioData = req.body.audio;
 
   if (!audioData) {
     console.log('No audio data received');
@@ -78,13 +141,15 @@ app.post('/audio', (req, res) => {
     return;
   }
 
-  // 스트림이 활성화되어 있지 않다면 시작
-  if (!recognizeStream) {
-    startRecognitionStream();
-  }
+  console.log('Received audio data:', audioData);
+  latestAudioData = `Received audio data: ${audioData}`;
 
-  // 오디오 데이터를 스트림에 전달
-  recognizeStream.write(audioData);
+  // 모든 웹 소켓 클라이언트에게 데이터 전송
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(latestAudioData);
+    }
+  });
 
   res.send('Audio data received');
 });
