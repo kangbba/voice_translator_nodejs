@@ -15,6 +15,8 @@ let recognizeStream = null;
 let isRecognizing = false;
 
 function startRecognizeStream() {
+  console.log('Attempting to start Google Speech-to-Text stream...'); // 로그 추가
+
   recognizeStream = client
     .streamingRecognize({
       config: {
@@ -25,7 +27,7 @@ function startRecognizeStream() {
       interimResults: true,
     })
     .on('error', (err) => {
-      console.error('API request error: ', err);
+      console.error('API request error: ', err); // 오류 로그 강화
     })
     .on('data', (data) => {
       if (data.results[0] && data.results[0].alternatives[0]) {
@@ -35,9 +37,9 @@ function startRecognizeStream() {
       }
     })
     .on('end', () => {
-      console.log('Streaming ended.');
+      console.log('Google Speech-to-Text streaming ended.');
     });
-  console.log('Recognition stream started.');
+  console.log('Recognition stream successfully started.');
 }
 
 const server = http.createServer(app);
@@ -49,8 +51,6 @@ wss.on('connection', (ws) => {
   ws.on('message', (message) => {
     // 수신된 데이터가 Buffer인 경우 로그 출력
     if (Buffer.isBuffer(message)) {
-      console.log('Received Buffer data from ESP32:', message);
-
       // 클라이언트로 Buffer 데이터를 전송
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
@@ -63,25 +63,7 @@ wss.on('connection', (ws) => {
         console.log('Sending data to Google Speech-to-Text API.');
         recognizeStream.write(message); // Google API로 데이터 스트리밍
       }
-    } else {
-      try {
-        const { command } = JSON.parse(message);
-        if (command === 'start' && !isRecognizing) {
-          isRecognizing = true;
-          startRecognizeStream();
-          console.log('Recognition started');
-        } else if (command === 'stop' && isRecognizing) {
-          isRecognizing = false;
-          if (recognizeStream) {
-            recognizeStream.end();
-            recognizeStream = null;
-          }
-          console.log('Recognition stopped');
-        }
-      } catch (error) {
-        console.error('Error parsing message:', error.message);
-      }
-    }
+    } 
   });
 
   ws.on('close', () => {
@@ -95,66 +77,66 @@ wss.on('connection', (ws) => {
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Speech Recognition</title>
-      <style>
-        #log {
-          font-family: monospace;
-          font-size: 14px;
-          height: 200px;
-          overflow-y: scroll;
-          border: 1px solid #ccc;
-          padding: 10px;
-          margin-bottom: 20px;
-        }
-        #log div {
-          white-space: pre-wrap;
-        }
-      </style>
-    </head>
-    <body>
-      <h1>Google Speech-to-Text WebSocket Demo</h1>
-      <div id="log"></div>
-      <button id="toggleButton">Send to Google API</button>
-      <script>
-        const ws = new WebSocket('ws://localhost:${port}');
-        const logDiv = document.getElementById('log');
-        const toggleButton = document.getElementById('toggleButton');
-        let isRecognizing = false;
-        const maxLogItems = 20;
-
-        toggleButton.addEventListener('click', () => {
-          isRecognizing = !isRecognizing;
-          toggleButton.innerText = isRecognizing ? 'Stop Sending to Google API' : 'Send to Google API';
-          ws.send(JSON.stringify({ command: isRecognizing ? 'start' : 'stop' }));
-        });
-
-        ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          const logItem = document.createElement('div');
-          logItem.textContent = data.join(', ');
-
-          if (logDiv.childNodes.length >= maxLogItems) {
-            logDiv.removeChild(logDiv.firstChild);
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Speech Recognition</title>
+        <style>
+          #log {
+            font-family: monospace;
+            font-size: 14px;
+            height: 200px;
+            overflow-y: scroll;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 20px;
           }
+          #log div {
+            white-space: pre-wrap;
+          }
+        </style>
+      </head>
+      <body>
+        <h1>Google Speech-to-Text WebSocket Demo</h1>
+        <div id="log"></div>
+        <button id="toggleButton">Send to Google API</button>
+        <script>
+          const ws = new WebSocket('ws://localhost:3000');
+          const logDiv = document.getElementById('log');
+          const toggleButton = document.getElementById('toggleButton');
+          let isRecognizing = false;
+          const maxLogItems = 20;
 
-          logDiv.appendChild(logItem);
-          logDiv.scrollTop = logDiv.scrollHeight; // 스크롤을 아래로 유지
-        };
+          toggleButton.addEventListener('click', () => {
+            isRecognizing = !isRecognizing;
+            toggleButton.innerText = isRecognizing ? 'Stop Sending to Google API' : 'Send to Google API';
+            ws.send(JSON.stringify({ command: isRecognizing ? 'start' : 'stop' }));
+          });
 
-        ws.onopen = () => {
-          console.log('WebSocket connected');
-        };
+          ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const logItem = document.createElement('div');
+            logItem.textContent = data.join(', ');
 
-        ws.onclose = () => {
-          console.log('WebSocket disconnected');
-        };
-      </script>
-    </body>
-    </html>
+            if (logDiv.childNodes.length >= maxLogItems) {
+              logDiv.removeChild(logDiv.firstChild);
+            }
+
+            logDiv.appendChild(logItem);
+            logDiv.scrollTop = logDiv.scrollHeight; // 스크롤을 아래로 유지
+          };
+
+          ws.onopen = () => {
+            console.log('WebSocket connected');
+          };
+
+          ws.onclose = () => {
+            console.log('WebSocket disconnected');
+          };
+        </script>
+      </body>
+      </html>
   `);
 });
 
