@@ -151,115 +151,138 @@ wssCommand.on('connection', (ws) => {
 // HTTP 엔드포인트 처리 (시각화 클라이언트 제공)
 app.get('/', (req, res) => {
   res.send(`
-    <!DOCTYPE html>
-      <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Speech Recognition</title>
-          <style>
-            #log {
-              font-family: monospace;
-              font-size: 14px;
-              height: 200px;
-              overflow-y: scroll;
-              border: 1px solid #ccc;
-              padding: 10px;
-              margin-bottom: 20px;
-            }
-            #status {
-              font-family: monospace;
-              font-size: 16px;
-              font-weight: bold;
-              color: green;
-            }
-            #waveform {
-              width: 100%;
-              height: 200px;
-              background-color: #f0f0f0;
-              border: 1px solid #ccc;
-              margin-bottom: 20px;
-            }
-          </style>
-        </head>
-        <body>
-          <h1>Google Speech-to-Text WebSocket Demo</h1>
-          <div id="status">구글 API 전송 대기 중입니다</div>
-          <canvas id="waveform"></canvas>
-          <div id="log"></div>
+   <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech Recognition</title>
+    <style>
+      #log {
+        font-family: monospace;
+        font-size: 14px;
+        height: 200px;
+        overflow-y: scroll;
+        border: 1px solid #ccc;
+        padding: 10px;
+        margin-bottom: 20px;
+      }
+      #status {
+        font-family: monospace;
+        font-size: 16px;
+        font-weight: bold;
+        color: green;
+      }
+      #waveform {
+        width: 100%;
+        height: 200px;
+        background-color: #f0f0f0;
+        border: 1px solid #ccc;
+        margin-bottom: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Google Speech-to-Text WebSocket Demo</h1>
+    <div id="status">구글 API 전송 대기 중입니다</div>
+    <canvas id="waveform"></canvas>
+    <div id="log"></div>
 
-          <script>
-            const wsAudio = new WebSocket('ws://localhost:3000/audio');
-            const wsCommand = new WebSocket('ws://localhost:3000/command');
-            const logDiv = document.getElementById('log');
-            const statusDiv = document.getElementById('status');
-            const maxLogItems = 20;
-            const canvas = document.getElementById('waveform');
-            const ctx = canvas.getContext('2d');
-            let waveData = [];
+    <script>
+      const wsAudio = new WebSocket('ws://localhost:3000/audio');
+      const wsCommand = new WebSocket('ws://localhost:3000/command');
+      const logDiv = document.getElementById('log');
+      const statusDiv = document.getElementById('status');
+      const maxLogItems = 20;
+      const canvas = document.getElementById('waveform');
+      const ctx = canvas.getContext('2d');
+      let waveData = [];
+      
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      let audioBuffer = [];
 
-            wsAudio.onmessage = (event) => {
-              const data = JSON.parse(event.data);
-              const logItem = document.createElement('div');
-              logItem.textContent = data;
+      wsAudio.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const logItem = document.createElement('div');
+        logItem.textContent = data;
 
-              // Log display logic
-              if (logDiv.childNodes.length >= maxLogItems) {
-                logDiv.removeChild(logDiv.firstChild);
-              }
-              logDiv.appendChild(logItem);
-              logDiv.scrollTop = logDiv.scrollHeight;
+        // Log display logic
+        if (logDiv.childNodes.length >= maxLogItems) {
+          logDiv.removeChild(logDiv.firstChild);
+        }
+        logDiv.appendChild(logItem);
+        logDiv.scrollTop = logDiv.scrollHeight;
 
-              // Waveform logic
-              waveData = data.map(Number); // Convert string data to numbers
-              drawWaveform(waveData);
-            };
+        // Waveform logic
+        waveData = data.map(Number); // Convert string data to numbers
+        drawWaveform(waveData);
+        playAudio(waveData);
+      };
 
-            wsCommand.onmessage = (event) => {
-              const data = event.data;
-              if (data.startsWith('status:')) {
-                const statusText = data.split(':')[1].trim();
-                statusDiv.textContent = '구글 API ' + statusText;
-                statusDiv.style.color = statusText === '전송 중' ? 'red' : 'green';
-              }
-            };
+      wsCommand.onmessage = (event) => {
+        const data = event.data;
+        if (data.startsWith('status:')) {
+          const statusText = data.split(':')[1].trim();
+          statusDiv.textContent = '구글 API ' + statusText;
+          statusDiv.style.color = statusText === '전송 중' ? 'red' : 'green';
+        }
+      };
 
-            wsAudio.onopen = () => {
-              console.log('WebSocket connected to /audio');
-            };
+      wsAudio.onopen = () => {
+        console.log('WebSocket connected to /audio');
+      };
 
-            wsCommand.onopen = () => {
-              console.log('WebSocket connected to /command');
-            };
+      wsCommand.onopen = () => {
+        console.log('WebSocket connected to /command');
+      };
 
-            wsAudio.onclose = () => {
-              console.log('WebSocket disconnected from /audio');
-            };
+      wsAudio.onclose = () => {
+        console.log('WebSocket disconnected from /audio');
+      };
 
-            wsCommand.onclose = () => {
-              console.log('WebSocket disconnected from /command');
-            };
+      wsCommand.onclose = () => {
+        console.log('WebSocket disconnected from /command');
+      };
 
-            // Function to draw the waveform
-            function drawWaveform(data) {
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-              ctx.beginPath();
-              ctx.moveTo(0, canvas.height / 2);
+      // Function to draw the waveform
+      function drawWaveform(data) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height / 2);
 
-              const step = canvas.width / data.length;
-              for (let i = 0; i < data.length; i++) {
-                const amplitude = data[i] / 32768; // Normalize data to -1 to 1 range
-                const y = (amplitude * canvas.height) / 2 + canvas.height / 2;
-                ctx.lineTo(i * step, y);
-              }
+        const step = canvas.width / data.length;
+        for (let i = 0; i < data.length; i++) {
+          const amplitude = data[i] / 32768; // Normalize data to -1 to 1 range
+          const y = (amplitude * canvas.height) / 2 + canvas.height / 2;
+          ctx.lineTo(i * step, y);
+        }
 
-              ctx.strokeStyle = '#007BFF';
-              ctx.lineWidth = 2;
-              ctx.stroke();
-            }
-          </script>
-        </body>
-      </html>
+        ctx.strokeStyle = '#007BFF';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Function to play the audio
+      function playAudio(data) {
+        const buffer = new Float32Array(data.length);
+        
+        // Normalize data to range between -1 and 1 for audio playback
+        for (let i = 0; i < data.length; i++) {
+          buffer[i] = data[i] / 32768;
+        }
+
+        // Create an AudioBuffer and play the audio data
+        const audioBuffer = audioContext.createBuffer(1, buffer.length, 16000);
+        audioBuffer.copyToChannel(buffer, 0);
+
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+        source.start();
+      }
+    </script>
+  </body>
+</html>
 
   `);
 });
