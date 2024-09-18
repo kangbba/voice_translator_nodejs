@@ -1,21 +1,47 @@
-// server.js
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const speech = require('@google-cloud/speech').v1p1beta1;
+const dns = require('dns'); // DNS 모듈을 사용해 인터넷 연결 상태 확인
+
 const app = express();
 const port = 3000;
 
-// Google Cloud 서비스 계정 키 파일 경로 설정
-process.env.GOOGLE_APPLICATION_CREDENTIALS = '/Users/ensayne/AndroidStudioProjects/VoiceTranslatorProject/voice_translator_nodejs/stt-hardware-test-95b82c5ac6f1.json';
+// 서비스 계정 키 파일 경로를 하드코딩
+const serviceAccountPath = '/Users/ensayne/AndroidStudioProjects/VoiceTranslatorProject/voice_translator_nodejs/stt-hardware-test-95b82c5ac6f1.json';
 
-const client = new speech.SpeechClient();
+const client = new speech.SpeechClient({
+  keyFilename: serviceAccountPath, // 서비스 계정 키 파일을 직접 지정
+});
 
 let recognizeStream = null;
 let isRecognizing = false;
+let isInternetAvailable = false; // 인터넷 연결 상태 추적
+
+// 인터넷 연결 여부 확인 함수
+function checkInternetConnection() {
+  dns.lookup('google.com', (err) => {
+    if (err && err.code === 'ENOTFOUND') {
+      console.log('No internet connection available.');
+      isInternetAvailable = false;
+    } else {
+      console.log('Internet connection is available.');
+      isInternetAvailable = true;
+    }
+  });
+}
+
+// 10초마다 인터넷 연결 상태 확인 (필요에 따라 조정 가능)
+setInterval(checkInternetConnection, 10000);
+checkInternetConnection(); // 초기 실행 시 즉시 확인
 
 function startRecognizeStream() {
-  console.log('Attempting to start Google Speech-to-Text stream...'); // 로그 추가
+  if (!isInternetAvailable) {
+    console.error('Cannot start recognition: No internet connection.');
+    return; // 인터넷이 없으면 스트리밍 시작하지 않음
+  }
+
+  console.log('Attempting to start Google Speech-to-Text stream...');
 
   recognizeStream = client
     .streamingRecognize({
@@ -27,7 +53,7 @@ function startRecognizeStream() {
       interimResults: true,
     })
     .on('error', (err) => {
-      console.error('API request error: ', err); // 오류 로그 강화
+      console.error('API request error: ', err);
     })
     .on('data', (data) => {
       if (data.results[0] && data.results[0].alternatives[0]) {
@@ -39,6 +65,7 @@ function startRecognizeStream() {
     .on('end', () => {
       console.log('Google Speech-to-Text streaming ended.');
     });
+
   console.log('Recognition stream successfully started.');
 }
 
@@ -60,8 +87,12 @@ wss.on('connection', (ws) => {
 
       // 음성 인식이 활성화된 경우에만 Google API로 데이터를 보냅니다.
       if (isRecognizing && recognizeStream) {
-        console.log('Sending data to Google Speech-to-Text API.');
-        recognizeStream.write(message); // Google API로 데이터 스트리밍
+        if (isInternetAvailable) {
+          console.log('Sending data to Google Speech-to-Text API.');
+          recognizeStream.write(message); // Google API로 데이터 스트리밍
+        } else {
+          console.log('Cannot send data: No internet connection.');
+        }
       }
     } 
   });
