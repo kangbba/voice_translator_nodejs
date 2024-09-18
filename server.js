@@ -2,15 +2,13 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const speech = require('@google-cloud/speech').v1p1beta1;
-const dns = require('dns'); // DNS 모듈을 사용해 인터넷 연결 상태 확인
-const readline = require('readline'); // 시리얼 모니터 역할을 위한 입력 모듈
+const dns = require('dns');
 
 const app = express();
 const port = 3000;
 
-// 서비스 계정 키 파일 경로를 하드코딩
+// Google Cloud Speech-to-Text 클라이언트 설정
 const serviceAccountPath = '/Users/ensayne/AndroidStudioProjects/VoiceTranslatorProject/voice_translator_nodejs/stt-hardware-test-95b82c5ac6f1.json';
-
 const client = new speech.SpeechClient({
   keyFilename: serviceAccountPath,
 });
@@ -18,12 +16,6 @@ const client = new speech.SpeechClient({
 let recognizeStream = null;
 let isRecognizing = false;
 let isInternetAvailable = false;
-
-// 시리얼 입력을 받기 위한 인터페이스 설정
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
 
 // 인터넷 연결 여부 확인 함수
 function checkInternetConnection() {
@@ -42,6 +34,7 @@ function checkInternetConnection() {
 setInterval(checkInternetConnection, 10000);
 checkInternetConnection(); // 초기 실행 시 즉시 확인
 
+// 음성 데이터 스트림 시작 함수
 function startRecognizeStream() {
   if (!isInternetAvailable) {
     console.error('Cannot start recognition: No internet connection.');
@@ -77,6 +70,7 @@ function startRecognizeStream() {
   console.log('Recognition stream successfully started.');
 }
 
+// 음성 데이터 스트림 중지 함수
 function stopRecognizeStream() {
   if (recognizeStream) {
     recognizeStream.end();
@@ -86,124 +80,208 @@ function stopRecognizeStream() {
   }
 }
 
+// HTTP 서버 생성
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
 
-wss.on('connection', (ws) => {
-  console.log('WebSocket connected');
+// WebSocket 서버 생성 및 엔드포인트 나누기
+const wssAudio = new WebSocket.Server({ noServer: true });
+const wssCommand = new WebSocket.Server({ noServer: true });
+
+// WebSocket 연결 처리 (음성 데이터 엔드포인트: /audio)
+wssAudio.on('connection', (ws) => {
+  console.log('WebSocket connected to /audio');
 
   ws.on('message', (message) => {
     if (Buffer.isBuffer(message)) {
-      // 클라이언트로 Buffer 데이터를 전송
-      wss.clients.forEach(client => {
+      // 음성 데이터를 수신
+      console.log('Received audio data from Arduino');
+
+      // WebSocket으로 음성 데이터를 클라이언트로 전송
+      wssAudio.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify(Array.from(message)));
         }
       });
 
-      // 음성 인식이 활성화된 경우에만 Google API로 데이터를 보냅니다.
+      // 음성 인식이 활성화된 경우 Google API로 데이터 전송
       if (isRecognizing && recognizeStream && isInternetAvailable) {
         console.log('Sending data to Google Speech-to-Text API.');
-        recognizeStream.write(message); // Google API로 데이터 스트리밍
-      } else if (!isInternetAvailable) {
-        console.log('Cannot send data: No internet connection.');
+        recognizeStream.write(message);
       }
     }
   });
 
   ws.on('close', () => {
-    console.log('WebSocket closed');
-    if (recognizeStream) {
-      stopRecognizeStream();
-    }
+    console.log('WebSocket closed for /audio');
   });
 });
 
+// WebSocket 연결 처리 (명령어 엔드포인트: /command)
+wssCommand.on('connection', (ws) => {
+  console.log('WebSocket connected to /command');
+
+  ws.on('message', (message) => {
+    const command = message.toString().trim();
+    if (command === 'start') {
+      if (!isRecognizing) {
+        console.log('Starting recognition from /command');
+        startRecognizeStream();
+        ws.send('status: 전송 중');
+      } else {
+        console.log('Already recognizing.');
+      }
+    } else if (command === 'stop') {
+      if (isRecognizing) {
+        console.log('Stopping recognition from /command');
+        stopRecognizeStream();
+        ws.send('status: 대기 중');
+      } else {
+        console.log('Recognition is not running.');
+      }
+    } else {
+      console.log(`Unknown command from Arduino: ${command}`);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('WebSocket closed for /command');
+  });
+});
+
+// HTTP 엔드포인트 처리 (시각화 클라이언트 제공)
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
-    <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Speech Recognition</title>
-        <style>
-          #log {
-            font-family: monospace;
-            font-size: 14px;
-            height: 200px;
-            overflow-y: scroll;
-            border: 1px solid #ccc;
-            padding: 10px;
-            margin-bottom: 20px;
-          }
-          #log div {
-            white-space: pre-wrap;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>Google Speech-to-Text WebSocket Demo</h1>
-        <div id="status">Waiting for command from Serial...</div>
-        <div id="log"></div>
-        <script>
-          const ws = new WebSocket('ws://localhost:3000');
-          const logDiv = document.getElementById('log');
-          const statusDiv = document.getElementById('status');
-          const maxLogItems = 20;
-
-          ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            const logItem = document.createElement('div');
-            logItem.textContent = data.join(', ');
-
-            if (logDiv.childNodes.length >= maxLogItems) {
-              logDiv.removeChild(logDiv.firstChild);
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Speech Recognition</title>
+          <style>
+            #log {
+              font-family: monospace;
+              font-size: 14px;
+              height: 200px;
+              overflow-y: scroll;
+              border: 1px solid #ccc;
+              padding: 10px;
+              margin-bottom: 20px;
             }
+            #status {
+              font-family: monospace;
+              font-size: 16px;
+              font-weight: bold;
+              color: green;
+            }
+            #waveform {
+              width: 100%;
+              height: 200px;
+              background-color: #f0f0f0;
+              border: 1px solid #ccc;
+              margin-bottom: 20px;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Google Speech-to-Text WebSocket Demo</h1>
+          <div id="status">구글 API 전송 대기 중입니다</div>
+          <canvas id="waveform"></canvas>
+          <div id="log"></div>
 
-            logDiv.appendChild(logItem);
-            logDiv.scrollTop = logDiv.scrollHeight;
-          };
+          <script>
+            const wsAudio = new WebSocket('ws://localhost:3000/audio');
+            const wsCommand = new WebSocket('ws://localhost:3000/command');
+            const logDiv = document.getElementById('log');
+            const statusDiv = document.getElementById('status');
+            const maxLogItems = 20;
+            const canvas = document.getElementById('waveform');
+            const ctx = canvas.getContext('2d');
+            let waveData = [];
 
-          ws.onopen = () => {
-            console.log('WebSocket connected');
-            statusDiv.textContent = 'Waiting for command from Serial...';
-          };
+            wsAudio.onmessage = (event) => {
+              const data = JSON.parse(event.data);
+              const logItem = document.createElement('div');
+              logItem.textContent = data;
 
-          ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            statusDiv.textContent = 'WebSocket disconnected';
-          };
+              // Log display logic
+              if (logDiv.childNodes.length >= maxLogItems) {
+                logDiv.removeChild(logDiv.firstChild);
+              }
+              logDiv.appendChild(logItem);
+              logDiv.scrollTop = logDiv.scrollHeight;
 
-          function updateStatus(isRecognizing) {
-            statusDiv.textContent = isRecognizing 
-              ? 'Recognition active: Sending data to Google API' 
-              : 'Recognition stopped: Waiting for command from Serial...';
-          }
+              // Waveform logic
+              waveData = data.map(Number); // Convert string data to numbers
+              drawWaveform(waveData);
+            };
 
-          // 서버 측에서 인식이 종료되면 상태 업데이트
-          setInterval(() => {
-            updateStatus(${isRecognizing});
-          }, 1000);
-        </script>
-      </body>
-    </html>
+            wsCommand.onmessage = (event) => {
+              const data = event.data;
+              if (data.startsWith('status:')) {
+                const statusText = data.split(':')[1].trim();
+                statusDiv.textContent = '구글 API ' + statusText;
+                statusDiv.style.color = statusText === '전송 중' ? 'red' : 'green';
+              }
+            };
+
+            wsAudio.onopen = () => {
+              console.log('WebSocket connected to /audio');
+            };
+
+            wsCommand.onopen = () => {
+              console.log('WebSocket connected to /command');
+            };
+
+            wsAudio.onclose = () => {
+              console.log('WebSocket disconnected from /audio');
+            };
+
+            wsCommand.onclose = () => {
+              console.log('WebSocket disconnected from /command');
+            };
+
+            // Function to draw the waveform
+            function drawWaveform(data) {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.beginPath();
+              ctx.moveTo(0, canvas.height / 2);
+
+              const step = canvas.width / data.length;
+              for (let i = 0; i < data.length; i++) {
+                const amplitude = data[i] / 32768; // Normalize data to -1 to 1 range
+                const y = (amplitude * canvas.height) / 2 + canvas.height / 2;
+                ctx.lineTo(i * step, y);
+              }
+
+              ctx.strokeStyle = '#007BFF';
+              ctx.lineWidth = 2;
+              ctx.stroke();
+            }
+          </script>
+        </body>
+      </html>
+
   `);
 });
 
-// 시리얼 모니터에서 명령을 수신
-rl.on('line', (input) => {
-  if (input.trim().toLowerCase() === 'start') {
-    console.log('Start command received from Serial Monitor');
-    startRecognizeStream();
-  } else if (input.trim().toLowerCase() === 'stop') {
-    console.log('Stop command received from Serial Monitor');
-    stopRecognizeStream();
+// WebSocket 서버 엔드포인트 설정
+server.on('upgrade', (request, socket, head) => {
+  const { pathname } = new URL(request.url, `http://${request.headers.host}`);
+
+  if (pathname === '/audio') {
+    wssAudio.handleUpgrade(request, socket, head, (ws) => {
+      wssAudio.emit('connection', ws, request);
+    });
+  } else if (pathname === '/command') {
+    wssCommand.handleUpgrade(request, socket, head, (ws) => {
+      wssCommand.emit('connection', ws, request);
+    });
   } else {
-    console.log('Unknown command received from Serial Monitor');
+    socket.destroy();
   }
 });
 
+// 서버 시작
 server.listen(port, () => {
   console.log(`Server is running at http://localhost:${port}`);
 });
