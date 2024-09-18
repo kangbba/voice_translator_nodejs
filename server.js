@@ -2,20 +2,77 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const speech = require('@google-cloud/speech').v1p1beta1;
 const app = express();
 const port = 3000;
-const host = '192.168.75.33';
 
-app.use(express.json());
+// Google Cloud 서비스 계정 키 파일 경로 설정
+process.env.GOOGLE_APPLICATION_CREDENTIALS = '/Users/ensayne/AndroidStudioProjects/VoiceTranslatorProject/voice_translator_nodejs/stt-hardware-test-95b82c5ac6f1.json';
+
+const client = new speech.SpeechClient();
+
+let recognizeStream = null;
+let isRecognizing = false;
+
+function startRecognizeStream() {
+  recognizeStream = client
+    .streamingRecognize({
+      config: {
+        encoding: 'LINEAR16',
+        sampleRateHertz: 16000,
+        languageCode: 'en-US',
+      },
+      interimResults: true,
+    })
+    .on('error', (err) => console.error('API request error: ', err))
+    .on('data', (data) => {
+      console.log('Transcription:', data.results[0].alternatives[0].transcript);
+    });
+}
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let latestAudioData = "응답이 아직 안 왔습니다";
-
 wss.on('connection', (ws) => {
-  console.log('New WebSocket connection established');
-  ws.send(latestAudioData);
+  console.log('WebSocket connected');
+
+  ws.on('message', (message) => {
+    // 수신된 데이터가 Buffer인 경우 로그 출력
+    if (Buffer.isBuffer(message)) {
+      console.log('Received Buffer data from ESP32:', message);
+
+      // 음성 인식이 활성화된 경우에만 Google API로 데이터를 보냅니다.
+      if (isRecognizing && recognizeStream) {
+        recognizeStream.write(message); // Google API로 데이터 스트리밍
+      }
+    } else {
+      // 이 부분은 ESP32에서 JSON 형식으로 명령을 보낼 때만 해당
+      try {
+        const { command } = JSON.parse(message);
+        if (command === 'start' && !isRecognizing) {
+          isRecognizing = true;
+          startRecognizeStream();
+          console.log('Recognition started');
+        } else if (command === 'stop' && isRecognizing) {
+          isRecognizing = false;
+          if (recognizeStream) {
+            recognizeStream.end();
+            recognizeStream = null;
+          }
+          console.log('Recognition stopped');
+        }
+      } catch (error) {
+        console.error('Error parsing message:', error.message);
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('WebSocket closed');
+    if (recognizeStream) {
+      recognizeStream.end();
+    }
+  });
 });
 
 app.get('/', (req, res) => {
@@ -24,137 +81,40 @@ app.get('/', (req, res) => {
     <html lang="en">
     <head>
       <meta charset="UTF-8">
-      <meta http-equiv="X-UA-Compatible" content="IE=edge">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Audio Data Viewer</title>
-      <style>
-        #log {
-          font-size: 14px;
-          margin-bottom: 20px;
-        }
-        #toggleButton {
-          padding: 10px 20px;
-          margin-bottom: 20px;
-          cursor: pointer;
-        }
-        #controls {
-          display: flex;
-          align-items: center;
-          margin-top: 10px;
-        }
-        canvas {
-          border: 1px solid black;
-        }
-      </style>
+      <title>Speech Recognition</title>
     </head>
     <body>
-      <h1>ESP32 Audio Data</h1>
-      <button id="toggleButton">Toggle Visualization</button>
-      <div id="log">응답이 아직 안 왔습니다</div>
-      <canvas id="audioCanvas" width="800" height="200"></canvas>
-      <div id="controls">
-        <label for="scaleSlider">Amplitude Scale:</label>
-        <input type="range" id="scaleSlider" min="1" max="100" value="50">
-      </div>
-
+      <h1>Google Speech-to-Text WebSocket Demo</h1>
+      <button id="toggleButton">Start Recognition</button>
       <script>
-        const logDiv = document.getElementById('log');
+        const ws = new WebSocket('ws://localhost:${port}');
         const toggleButton = document.getElementById('toggleButton');
-        const canvas = document.getElementById('audioCanvas');
-        const ctx = canvas.getContext('2d');
-        const scaleSlider = document.getElementById('scaleSlider');
-        let visualize = false;
-        let amplitudeScale = 50; // 슬라이더로 조절할 진폭 스케일 값
-
-        const ws = new WebSocket('ws://${host}:${port}');
-
-        ws.onmessage = (event) => {
-          const data = parseFloat(event.data.split(': ')[1]);
-          if (visualize) {
-            drawWaveform(data);
-          } else {
-            logDiv.innerText = event.data;
-          }
-        };
-
-        ws.onerror = (error) => {
-          logDiv.innerText = 'WebSocket error: ' + error.message;
-        };
+        let isRecognizing = false;
 
         toggleButton.addEventListener('click', () => {
-          visualize = !visualize;
-          toggleButton.innerText = visualize ? 'Turn Off Visualization' : 'Turn On Visualization';
-          if (!visualize) {
-            logDiv.style.display = 'block';
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-          } else {
-            logDiv.style.display = 'none';
-          }
+          isRecognizing = !isRecognizing;
+          toggleButton.innerText = isRecognizing ? 'Stop Recognition' : 'Start Recognition';
+          ws.send(JSON.stringify({ command: isRecognizing ? 'start' : 'stop' }));
         });
 
-        // 슬라이더로 진폭 조절
-        scaleSlider.addEventListener('input', (event) => {
-          amplitudeScale = parseInt(event.target.value);
-        });
+        ws.onopen = () => {
+          console.log('WebSocket connected');
+        };
 
-        // 음파 시각화를 부드러운 곡선 형태로 그리는 함수
-        const waveData = [];
-        const maxWaveDataLength = 400;
+        ws.onmessage = (event) => {
+          console.log('Server:', event.data);
+        };
 
-        function drawWaveform(value) {
-          if (waveData.length >= maxWaveDataLength) {
-            waveData.shift(); // 오래된 데이터 제거
-          }
-
-          waveData.push(value); // 새로운 데이터 추가
-
-          // 캔버스 초기화 및 그리기 시작
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.beginPath();
-          ctx.moveTo(0, canvas.height / 2);
-
-          // 곡선으로 그리기
-          for (let i = 0; i < waveData.length; i++) {
-            const x = (i / maxWaveDataLength) * canvas.width;
-            const y = canvas.height / 2 - (waveData[i] / (32768 / amplitudeScale)) * (canvas.height / 2); // 진폭 스케일을 반영하여 그리기
-            ctx.lineTo(x, y);
-          }
-
-          ctx.strokeStyle = 'blue';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        }
+        ws.onclose = () => {
+          console.log('WebSocket disconnected');
+        };
       </script>
     </body>
     </html>
   `);
 });
 
-// '/audio' 엔드포인트에서 데이터를 받기
-app.post('/audio', (req, res) => {
-  console.log('POST request received at /audio');
-  const audioData = req.body.audio;
-
-  if (!audioData) {
-    console.log('No audio data received');
-    res.status(400).send('No audio data received');
-    return;
-  }
-
-  console.log('Received audio data:', audioData);
-  latestAudioData = `Received audio data: ${audioData}`;
-
-  // 모든 웹 소켓 클라이언트에게 데이터 전송
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(latestAudioData);
-    }
-  });
-
-  res.send('Audio data received');
-});
-
-// 서버 실행
-server.listen(port, host, () => {
-  console.log(`Server is running at http://${host}:${port}`);
+server.listen(port, () => {
+  console.log(`Server is running at http://localhost:${port}`);
 });
