@@ -4,7 +4,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const app = express();
 const port = 3000;
-const host = '192.168.75.215';
+const host = '192.168.75.33';
 
 app.use(express.json());
 
